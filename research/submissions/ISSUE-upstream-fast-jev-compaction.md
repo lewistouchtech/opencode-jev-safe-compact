@@ -120,4 +120,43 @@ takes a different approach to the same problems and I would rather the two be
 compared than merged. If the maintainers prefer a patch to this repository
 instead, say so and I will prepare one.
 
+### A fourth problem, found while implementing it
+
+Building the plugin turned up a measurement bug that is easy to make and worth
+checking for here.
+
+The compaction result is a **serialized text blob** - the retained transcript
+written out with markers around the calls - because OpenCode's compaction
+override takes a summary string rather than a replacement message list. Those
+markers cost characters, so the serialized form of a transcript is *larger*
+than the message list it came from.
+
+If the size after the compaction is measured on the message list rather than
+on the checkpoint, the saving is overstated, and in a session where the tool
+output is not the bulk of the context the compaction can end up making the
+model's context **larger** while the statistics say it saved something. I hit
+that: one shape measured a 30% saving and the context actually grew by 3.8%.
+
+So the check that matters is "is the checkpoint smaller than what the model
+reads now", and both sides have to be measured the way the model sees them.
+
+Two related details that came out of the same measurement:
+
+- **A fixed number of characters kept from the head and tail makes short
+  outputs impossible to compress.** Keeping 300 + 150 characters out of a
+  540-character output removes 90 of them. The kept amount has to be capped
+  proportionally as well.
+- **The narration in a long session can be a large share of the context**, and
+  a compactor that only looks at tool output will not shrink it. The plugin
+  asks about narration separately, and removes a note only when it describes a
+  step rather than a conclusion - and never removes a note that introduces a
+  tool call, so the transcript cannot end up with a conclusion whose evidence
+  is missing.
+
+Measured against a local `/v1/systemone` endpoint with `targetReduction: 1`:
+a tool-output-heavy session went from 21426 to 2620 characters (87.8%), a
+mixed one from 14357 to 8746 (39.1%), and a narration-heavy one from 12405 to
+11305 (8.9%). The last one barely shrinks, and that is the honest answer: a
+session made of conclusions compresses by summarising, not by pruning.
+
 Happy to provide the fixture or run additional variants if that is useful.
