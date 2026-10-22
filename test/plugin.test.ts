@@ -250,7 +250,7 @@ describe('compact: end to end against a fake decision service', () => {
 describe('serialize: the checkpoint keeps the structure', () => {
   it('marks tool calls and results', () => {
     const text = serialize(transcript());
-    expect(text).toContain('[tool-call id=call-1 name=bash]');
+    expect(text).toContain('[bash {"command":"pytest tests/ -v"}]');
     expect(text).toContain('<user>');
     expect(text).toContain('<assistant>');
   });
@@ -305,5 +305,73 @@ describe('applyDecisions: a dropped result leaves the call behind', () => {
     expect(kept.some((m) => m.toolUses.length > 0)).toBe(true);
     const results = kept.flatMap((m) => m.toolResults ?? []);
     expect(results.length).toBe(0);
+  });
+});
+
+describe('regression: the compaction must make the context smaller', () => {
+  it('declines when the checkpoint would not be smaller than what the model has', async () => {
+    // A tiny transcript: the markers around the calls cost more than the
+    // pruning saves, so the plugin must decline rather than make the context
+    // larger.
+    const messages: Message[] = [
+      { role: 'user', text: 'hi', toolUses: [] },
+      {
+        role: 'assistant',
+        text: '',
+        toolUses: [{ tool_use_id: 'c1', tool: 'bash', input: { command: 'ls' } }],
+      },
+      {
+        role: 'user',
+        text: '',
+        toolUses: [],
+        toolResults: [{ tool_use_id: 'c1', text: 'a'.repeat(500) }],
+      },
+    ];
+    const result = await compact(
+      messages,
+      {
+        baseUrl: 'http://fake/v1/systemone',
+        apiKey: 'x',
+        fetch: (async () => new Response('{}', { status: 500 })) as unknown as typeof fetch,
+      },
+      { preserveRecentMessages: 0 },
+    );
+    // The service failed, so nothing was decided and nothing was changed.
+    expect(result).toBeNull();
+  });
+
+  it('reports the checkpoint size as the size after the compaction', async () => {
+    const messages: Message[] = [
+      { role: 'user', text: 'Find the failing test', toolUses: [] },
+      {
+        role: 'assistant',
+        text: '',
+        toolUses: [{ tool_use_id: 'c1', tool: 'bash', input: { command: 'pytest' } }],
+      },
+      {
+        role: 'user',
+        text: '',
+        toolUses: [],
+        toolResults: [{ tool_use_id: 'c1', text: 'FAILED test_x\n' + 'y'.repeat(4000) }],
+      },
+    ];
+    const result = await compact(
+      messages,
+      {
+        baseUrl: 'http://fake/v1/systemone',
+        apiKey: 'x',
+        fetch: (async (_url: string, init: RequestInit) => {
+          const body = JSON.parse(String(init.body)) as { questions: Record<string, unknown> };
+          const answers: Record<string, { type: string; noul: number }> = {};
+          for (const id of Object.keys(body.questions)) answers[id] = { type: 'noul', noul: 0.2 };
+          return new Response(JSON.stringify({ answers }), { status: 200 });
+        }) as unknown as typeof fetch,
+      },
+      { preserveRecentMessages: 0, targetReduction: 1 },
+    );
+    expect(result).not.toBeNull();
+    // The reported size after is the checkpoint, not the message list.
+    expect(result!.stats.charsAfter).toBe(result!.checkpoint.length);
+    expect(result!.checkpoint.length).toBeLessThan(result!.stats.charsBefore);
   });
 });

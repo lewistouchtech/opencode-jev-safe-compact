@@ -27,7 +27,13 @@
  * longer see the evidence for.
  */
 
-import type { CallDecision, ResolvedOptions, ToolCall } from './types.js';
+import type {
+  CallDecision,
+  Narrative,
+  NarrativeDecision,
+  ResolvedOptions,
+  ToolCall,
+} from './types.js';
 
 /** The score the decision service returned for one call. */
 export interface CallScores {
@@ -102,7 +108,7 @@ export function decide(
       continue;
     }
 
-    const keepChars = options.truncateHeadChars + options.truncateTailChars;
+    const keepChars = keepCharsFor(call.resultChars, options);
     const removable = Math.max(0, call.resultChars - keepChars);
 
     if (removable <= 0) {
@@ -197,6 +203,46 @@ export function decide(
 }
 
 /**
+ * Decides which narration to remove.
+ *
+ * Unlike the tool outputs, a narration is a yes-or-no decision rather than a
+ * budgeted one: either the note still carries state or it does not. The floor
+ * is deliberately conservative because a removed note cannot be recovered.
+ */
+export function decideNarratives(
+  narratives: readonly Narrative[],
+  scores: ReadonlyMap<string, number>,
+  options: ResolvedOptions,
+): NarrativeDecision[] {
+  return narratives.map((narrative) => {
+    const score = scores.get(narrative.id) ?? 1;
+    const remove = options.pruneNarration && score < options.narrativeFloor;
+    return {
+      id: narrative.id,
+      messageIndex: narrative.messageIndex,
+      action: remove ? 'remove' : 'keep',
+      score,
+      reason: remove ? 'narration carries no state' : 'narration kept',
+    };
+  });
+}
+
+/**
+ * How many characters of a result are kept when it is shortened.
+ *
+ * The head and tail limits are upper bounds, not fixed amounts. A result of
+ * 500 characters cannot spare 450 of them, and insisting on it made short
+ * outputs impossible to compress at all. The ratio caps the kept portion at
+ * `keepRatio` of the result, so a short output is shortened proportionally.
+ */
+export function keepCharsFor(resultChars: number, options: ResolvedOptions): number {
+  const ratioCap = Math.floor(resultChars * options.keepRatio);
+  const head = Math.min(options.truncateHeadChars, ratioCap);
+  const tail = Math.min(options.truncateTailChars, ratioCap);
+  return head + tail;
+}
+
+/**
  * A shortening that frees fewer characters than this is not worth doing: it
  * churns the transcript for nothing.
  */
@@ -215,7 +261,7 @@ export function budgetChars(calls: readonly ToolCall[], options: ResolvedOptions
   for (const call of calls) {
     if (call.pinned) continue;
     if (call.isError && options.keepErrors) continue;
-    removable += Math.max(0, call.resultChars - options.truncateHeadChars - options.truncateTailChars);
+    removable += Math.max(0, call.resultChars - keepCharsFor(call.resultChars, options));
   }
   return Math.max(0, Math.round(removable * Math.max(0, Math.min(1, options.targetReduction))));
 }

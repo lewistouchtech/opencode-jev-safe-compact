@@ -10,6 +10,7 @@ import type {
   DecisionAnswers,
   DecisionServiceOptions,
   DecisionState,
+  Narrative,
   NoulQuestion,
   ToolCall,
 } from './types.js';
@@ -118,6 +119,34 @@ export function questionsFor(call: ToolCall): Record<string, NoulQuestion> {
           `The output is a directory listing, a dependency manifest, a git log, or ` +
           `other general repository state that can be re-read cheaply, and no specific ` +
           `detail in it is needed for the next step.`,
+      },
+    },
+  };
+}
+
+/**
+ * The question asked about one narration block.
+ *
+ * The criteria separate the two kinds of narration that matter. Narration that
+ * carries state - a conclusion, a decision, a constraint the assistant worked
+ * out - is kept. Narration that only narrates a step is dropped.
+ */
+export function narrationQuestion(narrative: Narrative): Record<string, NoulQuestion> {
+  return {
+    [`narrate_${narrative.id}`]: {
+      type: 'noul',
+      instructions:
+        `Does this note from earlier in the session still carry information the ` +
+        `assistant needs: "${narrative.text.slice(0, 200)}"`,
+      criteria: {
+        true:
+          `It states a conclusion, a decision, a constraint, or a finding that the ` +
+          `work still depends on, so removing it would lose the reasoning behind ` +
+          `what comes next.`,
+        false:
+          `It only describes a step that is being taken or has been taken - ` +
+          `"let me look", "now running", "checking the file" - and the outcome is ` +
+          `already recorded by the tool call and its output.`,
       },
     },
   };

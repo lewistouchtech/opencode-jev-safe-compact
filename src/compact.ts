@@ -2,11 +2,12 @@
  * Orchestration: ask, decide, apply, serialize.
  */
 
-import { ask, questionsFor } from './jev.js';
-import { budgetChars, decide } from './select.js';
+import { ask, narrationQuestion, questionsFor } from './jev.js';
+import { budgetChars, decide, decideNarratives } from './select.js';
 import type { CallScores } from './select.js';
 import {
   buildState,
+  collectNarratives,
   collectToolCalls,
   fitState,
   goalFromMessages,
@@ -17,8 +18,12 @@ import type {
   CompactOptions,
   CompactResult,
   CompactStats,
+  DecisionAnswers,
   DecisionServiceOptions,
   Message,
+  NoulQuestion,
+  Narrative,
+  NarrativeDecision,
   ResolvedOptions,
   ToolCall,
 } from './types.js';
@@ -30,8 +35,11 @@ export const DEFAULT_OPTIONS: ResolvedOptions = {
   dropFloor: 0.25,
   truncateHeadChars: 300,
   truncateTailChars: 150,
+  keepRatio: 0.4,
   allowDropCall: false,
   keepErrors: true,
+  pruneNarration: true,
+  narrativeFloor: 0.35,
   maxStateTokens: 25_000,
   maxRequestTokens: 30_000,
   requestTimeoutMs: 20_000,
@@ -46,6 +54,8 @@ export function resolveOptions(options: CompactOptions = {}): ResolvedOptions {
     'dropFloor',
     'truncateHeadChars',
     'truncateTailChars',
+    'keepRatio',
+    'narrativeFloor',
     'maxStateTokens',
     'maxRequestTokens',
     'requestTimeoutMs',
@@ -57,6 +67,7 @@ export function resolveOptions(options: CompactOptions = {}): ResolvedOptions {
   }
   if (typeof options.allowDropCall === 'boolean') out.allowDropCall = options.allowDropCall;
   if (typeof options.keepErrors === 'boolean') out.keepErrors = options.keepErrors;
+  if (typeof options.pruneNarration === 'boolean') out.pruneNarration = options.pruneNarration;
   return out;
 }
 
@@ -115,7 +126,17 @@ export function applyDecisions(
       if (!decision) return tool;
       if (decision.action === 'drop_call') return undefined;
       if (decision.action === 'keep') return tool;
-      // The result is changed below; the call itself stays.
+      // The result is changed below; the call itself stays. The copy of the
+      // output carried on the call has to change with it, or the old text
+      // would still be counted and could still be read.
+      if (tool.text !== undefined) {
+        return {
+          ...tool,
+          text: resultText.get(tool.tool_use_id)?.text === undefined
+            ? tool.text
+            : '',
+        };
+      }
       return tool;
     });
 
@@ -177,6 +198,28 @@ export function applyDecisions(
 }
 
 /**
+ * Applies the narration decisions: the text of a removed narration is taken
+ * out of its message.
+ */
+export function applyNarratives(
+  messages: readonly Message[],
+  decisions: readonly NarrativeDecision[],
+): Message[] {
+  const byIndex = new Map<number, NarrativeDecision>();
+  for (const decision of decisions) {
+    if (decision.action === 'remove') byIndex.set(decision.messageIndex, decision);
+  }
+  if (byIndex.size === 0) return [...messages];
+
+  return messages.map((message, index) => {
+    const decision = byIndex.get(index);
+    if (!decision) return message;
+    const text = message.text.replace(/\s+/g, ' ').trim();
+    return { ...message, text };
+  });
+}
+
+/**
  * Compacts a transcript.
  *
  * Returns null when it declines: no candidates, the service failed, or the
@@ -199,80 +242,126 @@ export async function compact(
   const raw = buildState(messages, calls, goal);
   const fitted = fitState(raw, resolved.maxStateTokens);
 
-  // Ask about the candidates in batches that fit one request.
+  // The narration that can be pruned, if any.
+  const narratives = resolved.pruneNarration
+    ? collectNarratives(messages, resolved.preserveRecentMessages)
+    : [];
+
+  // Every question goes out in as few requests as possible. The decision
+  // service evaluates the questions of one request in parallel, so a batch
+  // costs barely more than a single question - asking one narration at a
+  // time turned a two-second compaction into a minute and a half.
   const scores = new Map<string, CallScores>();
-  const batches = batchCandidates(candidates, fitted.tokens, resolved);
+  const narrativeScores = new Map<string, number>();
   let requests = 0;
 
-  for (const batch of batches) {
-    const questions: Record<string, ReturnType<typeof questionsFor>[string]> = {};
-    for (const call of batch) {
-      Object.assign(questions, questionsFor(call));
-    }
-    try {
-      const answers = await ask(service, fitted.state, questions);
-      requests += 1;
-      for (const call of batch) {
+  type Pending = {
+    questions: Record<string, NoulQuestion>;
+    apply: (answers: DecisionAnswers) => void;
+  };
+  const pending: Pending[] = [];
+  for (const call of candidates) {
+    pending.push({
+      questions: questionsFor(call),
+      apply: (answers) => {
         const keepCall = answers[`call_${call.id}`]?.noul;
         const keepResult = answers[`result_${call.id}`]?.noul;
         scores.set(call.id, {
           keepCall: typeof keepCall === 'number' ? keepCall : 1,
           keepResult: typeof keepResult === 'number' ? keepResult : 1,
         });
-      }
+      },
+    });
+  }
+  for (const narrative of narratives) {
+    pending.push({
+      questions: narrationQuestion(narrative),
+      apply: (answers) => {
+        const value = answers[`narrate_${narrative.id}`]?.noul;
+        if (typeof value === 'number') narrativeScores.set(narrative.id, value);
+      },
+    });
+  }
+
+  for (const batch of batchQuestions(pending, fitted.tokens, resolved)) {
+    const questions: Record<string, NoulQuestion> = {};
+    for (const item of batch) Object.assign(questions, item.questions);
+    try {
+      const answers = await ask(service, fitted.state, questions);
+      requests += 1;
+      for (const item of batch) item.apply(answers);
     } catch {
       // Fail open. Anything without an answer is treated as "keep".
       continue;
     }
   }
 
-  if (scores.size === 0) return null;
+  if (scores.size === 0 && narrativeScores.size === 0) return null;
+  const narrativeDecisions = decideNarratives(narratives, narrativeScores, resolved);
 
-  const charsBefore = messageChars(messages);
+  // Two different sizes matter here, and confusing them is how a compaction
+  // can look like a win while making the context larger.
+  //
+  //   native      - what the model reads now: the message list.
+  //   checkpoint  - what the model reads after the compaction: one text blob
+  //                 with markers around the calls.
+  //
+  // The markers cost characters, so the checkpoint is larger than the message
+  // list it came from. A compaction is only worth doing when the checkpoint is
+  // smaller than what the model has now.
+  const native = messageChars(messages);
   const budget = budgetChars(candidates, resolved);
   const decisions = decide(calls, scores, budget, resolved);
-  const kept = applyDecisions(messages, decisions, calls, resolved);
-  const charsAfter = messageChars(kept);
+  const kept = applyDecisions(
+    applyNarratives(messages, narrativeDecisions),
+    decisions,
+    calls,
+    resolved,
+  );
+  const checkpoint = serialize(kept);
 
-  // Not worth doing.
-  if (charsBefore - charsAfter < charsBefore * 0.05) return null;
+  // Not worth doing: the model would end up with a context that is no smaller
+  // than the one it started with.
+  if (checkpoint.length >= native) return null;
 
   const stats: CompactStats = {
     messagesBefore: messages.length,
     messagesAfter: kept.length,
-    charsBefore,
-    charsAfter,
+    charsBefore: native,
+    charsAfter: checkpoint.length,
     candidates: candidates.length,
     kept: decisions.filter((d) => d.action === 'keep').length,
     truncated: decisions.filter((d) => d.action === 'truncate').length,
     dropped: decisions.filter((d) => d.action === 'drop_result' || d.action === 'drop_call').length,
-    savedChars: charsBefore - charsAfter,
+    narrationsKept: narrativeDecisions.filter((d) => d.action === 'keep').length,
+    narrationsRemoved: narrativeDecisions.filter((d) => d.action === 'remove').length,
+    savedChars: native - checkpoint.length,
     requests,
     ms: Date.now() - started,
   };
 
-  return { messages: kept, decisions, stats };
+  return { messages: kept, decisions, stats, checkpoint };
 }
 
-/** Splits the candidates into batches that fit one request. */
-function batchCandidates(
-  candidates: readonly ToolCall[],
+/** Splits the questions into batches that fit one request. */
+function batchQuestions<T>(
+  items: readonly T[],
   stateTokens: number,
   options: ResolvedOptions,
-): ToolCall[][] {
-  const perCall = 120; // Rough cost of one question pair.
-  const budget = Math.max(perCall, options.maxRequestTokens - stateTokens - 500);
-  const batches: ToolCall[][] = [];
-  let current: ToolCall[] = [];
+  perItemTokens = 150,
+): T[][] {
+  const budget = Math.max(perItemTokens, options.maxRequestTokens - stateTokens - 500);
+  const batches: T[][] = [];
+  let current: T[] = [];
   let used = 0;
-  for (const call of candidates) {
-    if (current.length > 0 && used + perCall > budget) {
+  for (const item of items) {
+    if (current.length > 0 && used + perItemTokens > budget) {
       batches.push(current);
       current = [];
       used = 0;
     }
-    current.push(call);
-    used += perCall;
+    current.push(item);
+    used += perItemTokens;
   }
   if (current.length > 0) batches.push(current);
   return batches;
@@ -287,25 +376,23 @@ function batchCandidates(
  */
 export function serialize(messages: readonly Message[]): string {
   const out: string[] = [
-    '[jev-safe-compact checkpoint: the retained conversation follows verbatim; no model summary was generated]',
+    '[jev-safe-compact: the retained conversation follows verbatim; no model summary was generated]',
   ];
   for (const message of messages) {
-    out.push('', `<${message.role}>`);
-    if (message.text.length > 0) out.push(message.text);
+    // The role markers cost a handful of characters each and the model reads
+    // them as structure, so they stay - but nothing else is added.
+    out.push('', `<${message.role}>`, message.text);
     for (const tool of message.toolUses) {
-      out.push(`[tool-call id=${tool.tool_use_id} name=${tool.tool}]`);
-      out.push(safeJson(tool.input));
+      out.push(`[${tool.tool} ${safeJson(tool.input)}]`);
     }
     for (const result of message.toolResults ?? []) {
       if (message.toolUses.some((t) => t.tool_use_id === result.tool_use_id)) continue;
-      out.push(
-        `[tool-result id=${result.tool_use_id}${result.isError ? ' error=true' : ''}]`,
-      );
+      out.push(result.isError ? '[error]' : '[result]');
       out.push(result.text);
     }
     out.push(`</${message.role}>`);
   }
-  return out.join('\n');
+  return out.join('\n').replace(/\n{3,}/g, '\n\n');
 }
 
 function safeJson(value: unknown): string {

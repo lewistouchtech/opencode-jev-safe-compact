@@ -16,6 +16,7 @@ import type {
   HistoryEntry,
   HistoryToolCall,
   Message,
+  Narrative,
   ToolCall,
 } from './types.js';
 
@@ -124,6 +125,29 @@ export function collectToolCalls(
     }
   });
   return calls;
+}
+
+/**
+ * The assistant text blocks that could be removed on their own.
+ *
+ * Only text that is not attached to a tool call qualifies. A narration that
+ * introduces a call must stay as long as the call does, otherwise the
+ * transcript shows a conclusion whose evidence is missing - the shape of the
+ * fabricated work reports in upstream issue #65.
+ */
+export function collectNarratives(
+  messages: readonly Message[],
+  preserveRecentMessages: number,
+): Narrative[] {
+  const out: Narrative[] = [];
+  messages.forEach((message, index) => {
+    if (message.role !== 'assistant') return;
+    if (message.text.trim().length === 0) return;
+    if (message.toolUses.length > 0) return;
+    if (index >= messages.length - preserveRecentMessages) return;
+    out.push({ id: `n${out.length + 1}`, messageIndex: index, text: message.text });
+  });
+  return out;
 }
 
 /**

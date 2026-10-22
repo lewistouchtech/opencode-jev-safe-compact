@@ -48,6 +48,15 @@ export interface NativeMessage {
   [key: string]: unknown;
 }
 
+/** An assistant text block that could be removed on its own. */
+export interface Narrative {
+  /** Short id used in the state and in question names (`n1`, `n2`, ...). */
+  id: string;
+  /** Index of the message holding the text. */
+  messageIndex: number;
+  text: string;
+}
+
 /** A tool call paired with its result. */
 export interface ToolCall {
   /** Short id used in the state and in question names (`t1`, `t2`, ...). */
@@ -143,13 +152,34 @@ export interface CompactOptions {
    * between two conservative actions.
    */
   dropFloor?: number;
-  /** Characters kept from the head and the tail of a truncated result. */
+  /** Upper bound on the characters kept from the head of a truncated result. */
   truncateHeadChars?: number;
+  /** Upper bound on the characters kept from the tail of a truncated result. */
   truncateTailChars?: number;
+  /**
+   * At most this fraction of a result is kept when it is shortened. Default
+   * 0.4, so a short result is shortened proportionally instead of not at all.
+   */
+  keepRatio?: number;
   /** Allow removing the whole call. Off by default: see `research/FINDINGS.md`. */
   allowDropCall?: boolean;
   /** Never remove the output of a failed call. Default true. */
   keepErrors?: boolean;
+  /**
+   * Remove assistant narration that no longer carries state. Default true.
+   *
+   * Narration that states a conclusion or a decision is kept; narration that
+   * only describes a step ("let me look at the file") is removed. A narration
+   * is never removed while the tool calls it introduced are still there, so
+   * the transcript never shows a conclusion whose evidence is missing.
+   */
+  pruneNarration?: boolean;
+  /**
+   * Below this probability a narration is removed. Above it, it is kept.
+   * Default 0.35 - deliberately conservative, because a removed narration
+   * cannot be recovered.
+   */
+  narrativeFloor?: number;
   /** Estimated token ceiling for the state. */
   maxStateTokens?: number;
   /** Estimated token ceiling for one request. */
@@ -162,6 +192,14 @@ export interface ResolvedOptions extends Required<Omit<CompactOptions, 'goal'>> 
   goal: string;
 }
 
+export interface NarrativeDecision {
+  id: string;
+  messageIndex: number;
+  action: 'keep' | 'remove';
+  score: number;
+  reason: string;
+}
+
 export interface CompactStats {
   messagesBefore: number;
   messagesAfter: number;
@@ -171,6 +209,8 @@ export interface CompactStats {
   kept: number;
   truncated: number;
   dropped: number;
+  narrationsKept: number;
+  narrationsRemoved: number;
   savedChars: number;
   requests: number;
   ms: number;
@@ -180,6 +220,8 @@ export interface CompactResult {
   messages: Message[];
   decisions: CallDecision[];
   stats: CompactStats;
+  /** The checkpoint the model will read. Its length is the real context size. */
+  checkpoint: string;
 }
 
 export interface DecisionServiceOptions {

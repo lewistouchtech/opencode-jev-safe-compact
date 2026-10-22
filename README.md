@@ -58,11 +58,43 @@ defaults to `$TYPESAFE_API_KEY`; a local endpoint usually does not check it.
 | `targetReduction` | `0.25` | Fraction of the removable output to shorten or remove |
 | `dropFloor` | `0.25` | Below this probability an output may be removed rather than shortened |
 | `preserveRecentMessages` | `8` | Newest messages never touched |
-| `truncateHeadChars` / `truncateTailChars` | `300` / `150` | Characters kept from each end |
+| `truncateHeadChars` / `truncateTailChars` | `300` / `150` | Upper bound on the characters kept from each end |
+| `keepRatio` | `0.4` | At most this fraction of a result is kept when it is shortened |
+| `pruneNarration` | `true` | Remove narration that carries no state |
+| `narrativeFloor` | `0.35` | Below this probability a narration is removed |
 | `allowDropCall` | `false` | Allow removing the call as well as its output |
 | `keepErrors` | `true` | Never remove the output of a failed call |
 | `dryRun` | `false` | Report the plan without changing the session |
 | `logFile` | `~/.local/share/opencode/log/jev-safe-compact.log` | Decision log |
+
+## How much does it actually save?
+
+The number that matters is the size of the checkpoint the model reads after the
+compaction, not the number of bytes deleted. Measured against a local
+`/v1/systemone` endpoint, with `targetReduction: 1`:
+
+| session shape | before | after | smaller |
+|---|---|---|---|
+| tool output dominates | 21426 | 2620 | **87.8%** |
+| narration dominates | 12405 | 11305 | 8.9% |
+| mixed | 14357 | 8746 | 39.1% |
+
+Two things are worth noting.
+
+**The narration-heavy case barely shrinks, and that is the honest answer.** The
+narration in it ("I checked the code and here is what I concluded") states a
+conclusion, so the decision model keeps it, as it should. A session made of
+conclusions does not compress by pruning - it compresses by summarising, which
+is what the native compaction does and what this plugin deliberately does not
+do.
+
+**A compaction that would not make the context smaller is declined.** The
+checkpoint carries markers around every call, and those markers cost
+characters. On a small transcript the markers can cost more than the pruning
+saves, so the plugin returns nothing and OpenCode's own compaction proceeds.
+The check compares the checkpoint against what the model reads now, not against
+an in-memory message list - the two differ, and comparing the wrong pair once
+made a compaction look like a win while it made the context 10% larger.
 
 ## The measurement behind the design
 
