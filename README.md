@@ -4,24 +4,67 @@ JEV-guided context compaction for OpenCode, built around one measured finding:
 
 > **A fixed `keepThreshold: 0.5` is unreliable, because the absolute `noul` calibration drifts with the shape of the `state` that `fitState()` produces.** The *ranking* stays good (AUC 0.70–0.83); only the offset moves.
 
-This plugin is a from-scratch implementation in the OpenCode plugin API, informed by
+This plugin is a from-scratch implementation in the OpenCode V2 plugin API, informed by
 [`tamaratran/fast-jev-compaction`](https://github.com/tamaratran/fast-jev-compaction)
 and its OpenCode ports, plus the
 [TypeSafe noul / confidence documentation](https://docs.typesafe.ai/primitives/noul).
 
 ---
 
-## Status
+## What it does
 
-**Research phase.** The measurement scripts in `research/` are complete and
-reproducible. The plugin itself (`src/`) is not implemented yet — see
-[Roadmap](#roadmap).
+`/jev-compact` prunes a session's tool history with a decision model instead of
+asking a language model to rewrite it into a summary.
 
-The reason for publishing the research first is that the headline finding
-contradicts the most common advice on the issue tracker ("add `criteria`"), and
-the measurement should be reviewed before anyone builds on it.
+* Tool calls that still matter are **kept verbatim**.
+* Tool outputs that are no longer needed are **shortened** — head, tail, and a
+  marker saying what was removed and that the tool can be re-run.
+* The **call itself is never removed** by default, so the transcript still shows
+  what was run. (Upstream issue #65: removing the evidence while keeping the
+  narration produced fabricated work reports.)
+* A native `/compact` is **never** silently replaced. The plugin only acts on
+  the session the command asked for.
 
-## The finding
+## Install
+
+```jsonc
+// opencode.json
+{
+  "plugins": [
+    {
+      "package": "github:lewistouchtech/opencode-jev-safe-compact",
+      "options": {
+        "baseUrl": "http://127.0.0.1:8091/v1/systemone",
+        "model": "StartLux-Decision-9B",
+        "targetReduction": 0.3
+      }
+    }
+  ]
+}
+```
+
+`baseUrl` is any endpoint that speaks `POST {baseUrl}` with a Jev-shaped body
+and answers `{"answers":{"id":{"type":"noul","noul":0.62}}}`. That covers
+TypeSafe's hosted API, a local self-hosted model, and OpenCode Zen. `apiKey`
+defaults to `$TYPESAFE_API_KEY`; a local endpoint usually does not check it.
+
+## Options
+
+| Option | Default | Meaning |
+|---|---|---|
+| `baseUrl` | `$JEV_SAFE_COMPACT_BASE_URL` or `https://api.typesafe.ai/v1/systemone` | The decision endpoint |
+| `model` | `jev-latest` | Model name sent with the request |
+| `apiKey` | `$TYPESAFE_API_KEY` | Bearer token, if the endpoint wants one |
+| `targetReduction` | `0.25` | Fraction of the removable output to shorten or remove |
+| `dropFloor` | `0.25` | Below this probability an output may be removed rather than shortened |
+| `preserveRecentMessages` | `8` | Newest messages never touched |
+| `truncateHeadChars` / `truncateTailChars` | `300` / `150` | Characters kept from each end |
+| `allowDropCall` | `false` | Allow removing the call as well as its output |
+| `keepErrors` | `true` | Never remove the output of a failed call |
+| `dryRun` | `false` | Report the plan without changing the session |
+| `logFile` | `~/.local/share/opencode/log/jev-safe-compact.log` | Decision log |
+
+## The measurement behind the design
 
 Four `fitState()` stages, the same 15 tool results, 6 of which must be kept:
 
@@ -40,12 +83,29 @@ Full analysis: [`research/FINDINGS.md`](research/FINDINGS.md).
 Standalone write-up (the version posted to the upstream issue tracker):
 [`research/MEASUREMENT.md`](research/MEASUREMENT.md).
 
-## Reproducing
+## How the design answers it
+
+| | Upstream | This plugin |
+|---|---|---|
+| `criteria` on every question | none | explicit `true`/`false` for each |
+| what decides *how much* to remove | a fixed threshold | the budget, from the ranking |
+| what decides *shorten or remove* | the same threshold | the score, but only between two conservative actions |
+| the ambiguous middle | treated as "no" | treated as "shorten, do not remove" |
+| the state the model sees | output replaced by `ok, N chars (omitted)` | head and tail of the output carried through |
+| a tool call | may be removed | kept, unless `allowDropCall` |
+| the narration beside it | kept, so the model can report work it can no longer see | kept, with the removal marked |
+| a native `/compact` | intercepted | never touched |
+
+The central move: **the absolute score never decides whether something is
+kept.** The ranking decides *how much* to remove, and the score only chooses
+between shortening an output and removing it. A band that slides up or down
+therefore cannot turn "remove everything" into "remove nothing".
+
+## Reproducing the measurement
 
 Standard library only.
 
 ```bash
-# any /v1/systemone-compatible endpoint
 python3 research/measure_calibration_drift.py \
   --endpoint http://127.0.0.1:8091/v1/systemone \
   --model my-local-model --api-key local --repeat 5
@@ -58,42 +118,40 @@ python3 research/measure_calibration_drift.py \
 - [`research/measure_calibration_drift.py`](research/measure_calibration_drift.py) —
   the table above, plus threshold and top-k alternatives
 
-## Design principles for the plugin
+## Tests
 
-Drawn from the TypeSafe docs and the measurement above.
+```bash
+npm install
+npm run typecheck
+npm test
+```
 
-1. **Never use a fixed absolute threshold on `noul`.** Rank-based selection, or a
-   per-batch threshold, both of which survive calibration drift.
-2. **A `noul` near 0.5 means "unsure", not "no".** The docs are explicit that the
-   single probability already describes the whole distribution, and that a value
-   near 0.5 is a tie. Treat the middle band as *keep* — the cost of keeping a
-   stale result is far lower than the cost of deleting the evidence for a step
-   the model still needs.
-3. **Every question gets explicit `true`/`false` criteria.** The docs recommend
-   this whenever the yes/no boundary is subtle, and the measurement shows it
-   helps the ranking too.
-4. **One narrow question per `noul`.** Do not ask "is this call and its output
-   both still needed" — that is two questions, and the combined answer means
-   less.
-5. **Truncate before deleting.** A truncated result with a head, a tail, and a
-   re-run hint keeps the evidence trail; a deleted result leaves the model's
-   narration standing alone, which is how a model ends up reporting work that
-   never happened.
-6. **Fail open.** If the decision service is unavailable, times out, or the
-   reduction is not worth it, do nothing and let OpenCode fall back to its
-   native compaction.
-7. **Do not hook the generic `compaction` event.** Provide an explicit command
-   instead, so a native `/compact` is never silently replaced.
+The unit tests use a fake decision service and never touch the network. One
+test is skipped unless an endpoint is named:
 
-## Roadmap
+```bash
+JEV_LIVE_ENDPOINT=http://127.0.0.1:8091/v1/systemone \
+JEV_LIVE_MODEL=StartLux-Decision-9B npx vitest run test/live.test.ts
+```
 
-- [x] Measurement scripts, reproducible, standard library only
-- [x] Finding written up in `research/FINDINGS.md`
-- [ ] Plugin: local `/v1/systemone` client (any OpenAI-compatible endpoint)
-- [ ] Plugin: state construction with content heads/tails
-- [ ] Plugin: criteria templates + rank-based selection
-- [ ] Plugin: `/jev-compact` command, dry-run by default
-- [ ] Tests with a fake decision service (no network)
+## Limitations
+
+- **The measurement fixture is synthetic.** It was written by the author, so it
+  is not independent evidence. The scripts are written so that a real
+  transcript can be substituted, and reproducing the numbers in upstream #26
+  from session logs would be the most useful next step.
+- **The numbers in `research/` come from a local self-hosted model.** The
+  mechanism should be model-independent — it is a property of the scale, not
+  of one deployment — but that is an assumption, not a measurement.
+- **`targetReduction` is a guess.** How much to remove is not known from the
+  transcript alone; the plugin takes it from configuration.
+- **The checkpoint is a serialization.** OpenCode V2's compaction override
+  accepts a summary string, so the retained conversation is written out as
+  text with the tool calls and results marked, rather than being re-inserted
+  as structured messages.
+- **The `noul` near 0.5 is still "unsure", not "no".** This plugin treats that
+  band as "shorten, do not remove", which is conservative but not free: a
+  genuinely useless output may be shortened rather than dropped.
 
 ## Licence
 
@@ -106,9 +164,9 @@ This repository was written with AI assistance (OpenCode). The measurement
 scripts, the fixture, the analysis and the write-up were produced iteratively
 with an AI agent, and every number in `research/` was verified by running the
 scripts against a live endpoint before being written down. The measurements in
-`research/MEASUREMENT.md` were taken against a local self-hosted model; they have
-not been reproduced against the hosted `jev-latest` model, which the write-up
-states explicitly.
+`research/MEASUREMENT.md` were taken against a local self-hosted model; they
+have not been reproduced against the hosted `jev-latest` model, which the
+write-up states explicitly.
 
 ## Related
 
