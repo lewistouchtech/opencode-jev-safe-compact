@@ -115,6 +115,36 @@ plus a "never drop an error result" rule.
 - I did not measure the hosted `jev-latest` model, only a local one.
 - I did not look at whether the drift is specific to `noul` or also affects
   `choice`/`score` calibration.
+- I did not test adversarial inputs. See the note on #147 below.
+
+## Relation to #147
+
+#147 ("Jev Program Decision Hijacking") reports that adversarially influenced
+contextual input can make Jev produce structurally valid but unintended
+judgments, and notes that `fast-jev-compaction` is a place where that matters
+because Jev's verdict decides whether a tool result is retained or dropped.
+
+The measurement here is a milder and more mundane version of the same
+property: the verdict changes when the *shape* of the state changes, without
+any adversarial content at all. The state is shaped by `fitState()` — the
+plugin's own code — and the shape moves the scores enough to flip the
+threshold's behaviour on every item at once.
+
+Two things follow that seem worth separating:
+
+1. **The ranking is stable, the offset is not.** AUC 0.70–0.83 in every stage.
+   The model is still telling you which results matter. What is unreliable is
+   reading an absolute score off the scale and comparing it to a constant.
+2. **Rank-based selection is unaffected by both problems.** If the decision is
+   "keep the top k", then neither calibration drift nor a state that pushes
+   the whole band sideways changes which items survive. That seems like a
+   meaningful hardening step on its own, independent of #147.
+
+I am not claiming a link to #147's research — I have not read their findings
+and they deliberately kept the experimental details private. I am noting that
+both reports point at the same component making the same kind of decision, and
+that the fix direction in the "two candidate fixes" section above is
+orthogonal to whatever #147 concludes.
 
 ## Background
 

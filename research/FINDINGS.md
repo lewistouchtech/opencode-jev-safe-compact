@@ -134,6 +134,13 @@ to delete on the strength of a single goal-anchored question.
   should be model-independent — it is a property of the scale, not of one
   deployment — but that is an assumption, not a measurement.
 - Whether `choice` and `score` drift the same way.
+- Adversarial inputs. The upstream issue #147 ("Jev Program Decision Hijacking")
+  reports that adversarially influenced context can make Jev produce
+  structurally valid but unintended judgments. That is a stronger version of
+  the same property measured here: the verdict depends on the state, and a
+  hostile state is one way to change it. I have not tested that, and their
+  experimental details are deliberately private. Rank-based selection would be
+  indifferent to both cases.
 - How the drift behaves over many rounds of repeated compaction on one session.
 
 ## Implications for a plugin
