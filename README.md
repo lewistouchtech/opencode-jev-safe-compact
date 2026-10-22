@@ -37,6 +37,8 @@ all 15 items — including all 9 that were meant to be dropped. The ranking is
 fine; the offset is not.
 
 Full analysis: [`research/FINDINGS.md`](research/FINDINGS.md).
+Standalone write-up (the version posted to the upstream issue tracker):
+[`research/MEASUREMENT.md`](research/MEASUREMENT.md).
 
 ## Reproducing
 
