@@ -166,6 +166,25 @@ JEV_LIVE_ENDPOINT=http://127.0.0.1:8091/v1/systemone \
 JEV_LIVE_MODEL=StartLux-Decision-9B npx vitest run test/live.test.ts
 ```
 
+## Following the discussion
+
+The findings were posted to three places:
+
+- [tamaratran/fast-jev-compaction#154](https://github.com/tamaratran/fast-jev-compaction/issues/154)
+  — the upstream repository the design came from
+- [overbit/fast-jev-compaction-opencode#3](https://github.com/overbit/fast-jev-compaction-opencode/issues/3)
+  — the OpenCode port, whose `questionsFor` is byte-for-byte the upstream one
+- [yibie/awesome-jev#384](https://github.com/yibie/awesome-jev/pull/384)
+  — the catalogue entry
+
+`research/check-replies.sh` polls the three of them through the public API and
+prints what changed. It needs no token and touches nothing:
+
+```bash
+./research/check-replies.sh            # one-shot report
+./research/check-replies.sh --watch    # poll every 10 minutes
+```
+
 ## Limitations
 
 - **The measurement fixture is synthetic.** It was written by the author, so it

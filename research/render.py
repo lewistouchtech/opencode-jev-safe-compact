@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Render a diff between two snapshots of a GitHub issues listing.
-
-Reads the previous snapshot and the current one as JSON on stdin (a list
-argument for the current one), and prints what changed.
+"""Render a diff between two snapshots of our submissions.
 
     render.py < prev.json            # first run: list everything
     render.py < prev.json cur.json    # later runs: list only what changed
@@ -23,14 +20,12 @@ def load(stream) -> list:
 
 
 def main() -> int:
-    prev = load(sys.stdin)
-    cur: list = []
+    # stdin carries the current snapshot; argv[1] is the previous one.
+    cur = load(sys.stdin)
+    prev: list = []
     if len(sys.argv) > 1:
         with open(sys.argv[1], encoding="utf-8") as handle:
-            cur = load(handle)
-    else:
-        cur = prev
-        prev = []
+            prev = load(handle)
 
     old = {item.get("number"): item for item in prev}
 
@@ -38,27 +33,44 @@ def main() -> int:
         number = item.get("number")
         title = item.get("title", "")
         state = item.get("state", "")
-        user = item.get("user", "")
-        created = item.get("created", "")
-        comments = item.get("comments", 0)
-        body = item.get("body_head", "")
-
+        kind = item.get("kind", "issue")
+        updated = item.get("updated", "")
+        comments = item.get("comment_list") or []
         before = old.get(number)
+
         if before is None:
-            print(f"  + 新增 #{number} [{state}] {title} — {user} ({created})")
+            print(f"  + 我们发的 #{number} ({kind}) [{state}] {title}")
+        else:
+            changed = False
+            if before.get("state") != state:
+                print(f"  ~ #{number} 状态 {before.get('state')} -> {state}")
+                changed = True
+            old_comments = before.get("comment_list") or []
+            if len(old_comments) != len(comments):
+                changed = True
+            if changed:
+                print(f"  ~ #{number} [{state}] {title}")
+
+        if not comments:
+            if before is None:
+                print("      (还没有评论)")
+            continue
+
+        # Only the comments that are new since the previous run.
+        shown = comments
+        if before is not None:
+            old_comments = before.get("comment_list") or []
+            if len(old_comments) < len(comments):
+                shown = comments[len(old_comments):]
+            elif len(old_comments) == len(comments):
+                # Same count, but they may have been edited.
+                if old_comments != comments:
+                    shown = comments
+        for comment in shown:
+            print(f"      💬 {comment.get('user')} @{comment.get('created')}")
+            body = (comment.get("body") or "").strip()
             if body:
-                print(f"      {body[:150]}")
-        elif (
-            before.get("comments") != comments
-            or before.get("state") != state
-            or before.get("updated") != item.get("updated")
-        ):
-            print(
-                f"  ~ 变更 #{number} [{before.get('state')}->{state}] "
-                f"评论 {before.get('comments')}->{comments} : {title}"
-            )
-            if body:
-                print(f"      {body[:150]}")
+                print(f"         {body[:500]}")
     return 0
 
 

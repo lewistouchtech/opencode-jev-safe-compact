@@ -1,90 +1,88 @@
 #!/usr/bin/env bash
-# Check for replies to the three submissions and print what changed.
+# Track replies to the three submissions.
 #
 # Usage:
-#   ./research/check-replies.sh              # one-shot report
-#   ./research/check-replies.sh --watch      # poll every 5 minutes
+#   ./research/check-replies.sh            # one-shot report
+#   ./research/check-replies.sh --watch    # poll every 10 minutes
 #
-# Read-only: uses the public GitHub API, so it works with a token that only
-# has read access, and it works without a token at all.
+# Read-only: uses the public GitHub API. Works with a token that only has
+# read access, and works without a token at all.
 
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RENDER="$HERE/render.py"
 
-OWNER=lewistouchtech
-REPO=opencode-jev-safe-compact
-
-# Repositories where a reply to our submission would show up.
-# GitHub serves pull requests through the /issues endpoint too, so one call
-# per repository covers both issues and pull requests.
-TARGETS=(
-  "tamaratran/fast-jev-compaction"
-  "overbit/fast-jev-compaction-opencode"
-  "yibie/awesome-jev"
-)
-
 STATE_DIR="${TMPDIR:-/tmp}/jev-safe-compact-replies"
 mkdir -p "$STATE_DIR"
+
+# repo:number -> our own submission there.
+TARGETS=(
+  "tamaratran/fast-jev-compaction:154"
+  "overbit/fast-jev-compaction-opencode:3"
+  "yibie/awesome-jev:384"
+)
 
 fetch() {
   # $1 = owner/name
   local repo="$1"
   curl -s -m 20 -H "Accept: application/vnd.github+json" \
-    "https://api.github.com/repos/${repo}/issues?state=all&per_page=50" \
-    | python3 -c '
-import sys, json
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    print("[]")
-    sys.exit(0)
-if not isinstance(data, list):
-    print("[]")
-    sys.exit(0)
-out = []
-for it in data:
-    body = (it.get("body") or "")[:200].replace("\n", " ")
-    out.append({
-        "number": it.get("number"),
-        "state": it.get("state"),
-        "title": (it.get("title") or "")[:90],
-        "user": (it.get("user") or {}).get("login"),
-        "comments": it.get("comments", 0),
-        "created": (it.get("created_at") or "")[:10],
-        "updated": (it.get("updated_at") or "")[:10],
-        "body_head": body,
-    })
-print(json.dumps(out, ensure_ascii=False))
-'
+    "https://api.github.com/repos/${repo}/issues?state=all&per_page=100" \
+    | python3 "$HERE/collect.py"
+}
+
+# $1 = owner/name, $2 = issue number
+mine() {
+  python3 "$HERE/collect.py" --one "$1" "$2"
 }
 
 report() {
   local changed=0
-  for repo in "${TARGETS[@]}"; do
-    local f="$STATE_DIR/$(echo "$repo" | tr '/' '_').json"
-    local cur
-    cur=$(fetch "$repo")
+  for target in "${TARGETS[@]}"; do
+    local repo="${target%%:*}"
+    local number="${target##*:}"
+    local f="$STATE_DIR/$(echo "$repo" | tr '/' '_')_$number.json"
+    local mine_json
+    mine_json=$(mine "$repo" "$number")
+
+    local count
+    count=$(printf '%s' "$mine_json" | python3 -c 'import sys,json;print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)
+
+    if [ "$count" = "0" ]; then
+      echo "— $repo#$number: 找不到该条目"
+      continue
+    fi
+
     if [ ! -f "$f" ]; then
-      echo "$cur" > "$f"
-      echo "首次记录：$repo"
-      printf '%s' "$cur" | python3 "$RENDER"
+      echo "$mine_json" > "$f"
+      echo "首次记录：$repo#$number"
+      printf '%s' "$mine_json" | python3 "$RENDER"
       continue
     fi
-    if cmp -s "$f" <(printf '%s' "$cur"); then
-      echo "无变化：$repo"
+
+    # Compare the parsed content, not the bytes: the shell and the file can
+    # differ by a trailing newline.
+    if printf '%s' "$mine_json" | python3 -c 'import sys,json;print(json.dumps(json.load(sys.stdin),sort_keys=True))' > "$f.new" \
+       && python3 -c 'import sys,json;print(json.dumps(json.load(open(sys.argv[1])),sort_keys=True))' "$f" > "$f.old" \
+       && cmp -s "$f.new" "$f.old"; then
+      rm -f "$f.new" "$f.old"
+      echo "— $repo#$number: 无新回复"
       continue
     fi
+    rm -f "$f.new" "$f.old"
+
     changed=1
-    echo "有更新：$repo"
-    python3 "$RENDER" "$f" < <(printf '%s' "$cur")
-    echo "$cur" > "$f"
+    echo "=== $repo#$number: 有更新 ==="
+    python3 "$RENDER" "$f" < <(printf '%s' "$mine_json")
+    echo "$mine_json" > "$f"
   done
+
   if [ "$changed" = 1 ]; then
     echo
-    echo ">>> 有新回复，需要人工阅读："
-    echo "    https://github.com/${OWNER}/${REPO}/issues"
+    echo ">>> 需要人工阅读的链接："
+    echo "    上游母仓   https://github.com/tamaratran/fast-jev-compaction/issues/154"
+    echo "    移植版     https://github.com/overbit/fast-jev-compaction-opencode/issues/3"
+    echo "    收录 PR    https://github.com/yibie/awesome-jev/pull/384"
   fi
 }
 
@@ -92,7 +90,7 @@ if [ "${1:-}" = "--watch" ]; then
   while true; do
     echo "=== $(date '+%F %T') ==="
     report
-    sleep 300
+    sleep 600
   done
 else
   report
