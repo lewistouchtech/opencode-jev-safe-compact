@@ -103,4 +103,21 @@ orthogonal to whatever #147 concludes.
 
 I hit this while building a local variant of the OpenCode port, and the pieces I could not explain from the issue tracker lined up with the drift above. I am not proposing a patch to this repository — the plugin's architecture is sound and the `fitState()` ladder is well designed. I am mainly reporting the measurement because the "add criteria" advice alone did not fix the problem I was seeing, and the fixed threshold looked to me like the more likely culprit.
 
+## Follow-up
+
+The plugin has since been implemented from scratch in
+[`lewistouchtech/opencode-jev-safe-compact`](https://github.com/lewistouchtech/opencode-jev-safe-compact),
+using the measurement above as the design input rather than the other way round.
+Its central rule is that **the absolute score never decides whether something
+is kept**: the ranking decides how much to remove (a budget over the removable
+output), and the score only chooses between shortening an output and removing
+it. It also asks every question with explicit `true`/`false` criteria, carries
+the head and tail of each output into the state, never removes a tool call by
+default, and never touches a native `/compact`.
+
+It is published as a separate project rather than as a patch here, because it
+takes a different approach to the same problems and I would rather the two be
+compared than merged. If the maintainers prefer a patch to this repository
+instead, say so and I will prepare one.
+
 Happy to provide the fixture or run additional variants if that is useful.
