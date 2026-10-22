@@ -37,16 +37,16 @@ I would also flag a second, smaller effect, since it looked like the main one to
 
 Three scripts, standard library only, no dependencies:
 
-- [`research/measure_noul_wording.py`](measure_noul_wording.py) — four question wordings, AUC per wording
-- [`research/measure_state_degradation.py`](measure_state_degradation.py) — the same fixture at four `fitState()` stages
-- [`research/measure_calibration_drift.py`](measure_calibration_drift.py) — the table above, plus threshold and top-k alternatives
+- [`research/measure_noul_wording.py`](https://github.com/lewistouchtech/opencode-jev-safe-compact/blob/main/research/measure_noul_wording.py) — four question wordings, AUC per wording
+- [`research/measure_state_degradation.py`](https://github.com/lewistouchtech/opencode-jev-safe-compact/blob/main/research/measure_state_degradation.py) — the same fixture at four `fitState()` stages
+- [`research/measure_calibration_drift.py`](https://github.com/lewistouchtech/opencode-jev-safe-compact/blob/main/research/measure_calibration_drift.py) — the table above, plus threshold and top-k alternatives
 
 ```
-python3 research/measure_calibration_drift.py \
+python3 https://raw.githubusercontent.com/lewistouchtech/opencode-jev-safe-compact/main/research/measure_calibration_drift.py \
   --endpoint https://api.typesafe.ai/v1/systemone --model jev-latest --repeat 5
 
 # or against any /v1/systemone-compatible endpoint, e.g. a local self-hosted model
-python3 research/measure_calibration_drift.py \
+python3 https://raw.githubusercontent.com/lewistouchtech/opencode-jev-safe-compact/main/research/measure_calibration_drift.py \
   --endpoint http://127.0.0.1:8091/v1/systemone --model my-local-model \
   --api-key local --repeat 5
 ```
