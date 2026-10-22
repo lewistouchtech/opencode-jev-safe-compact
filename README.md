@@ -100,6 +100,16 @@ Drawn from the TypeSafe docs and the measurement above.
 MIT. The measurement scripts are original work. Where behaviour is derived from
 other projects, that is stated in the source and in `research/FINDINGS.md`.
 
+## Disclosure
+
+This repository was written with AI assistance (OpenCode). The measurement
+scripts, the fixture, the analysis and the write-up were produced iteratively
+with an AI agent, and every number in `research/` was verified by running the
+scripts against a live endpoint before being written down. The measurements in
+`research/MEASUREMENT.md` were taken against a local self-hosted model; they have
+not been reproduced against the hosted `jev-latest` model, which the write-up
+states explicitly.
+
 ## Related
 
 - [`tamaratran/fast-jev-compaction`](https://github.com/tamaratran/fast-jev-compaction) — the original plugin this line of work comes from
